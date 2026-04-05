@@ -5,7 +5,7 @@ Content extraction toolkit for building personal knowledge bases. Clips web arti
 ## Install
 
 ```bash
-uv add git+https://github.com/dpeterso/xtractr
+uv add git+https://github.com/peterson/xtractr
 # or for local development
 uv add --editable ../xtractr
 ```
