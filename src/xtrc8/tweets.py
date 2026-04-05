@@ -3,14 +3,14 @@
 tweets — Twitter/X bookmark sync, export, and TUI selector.
 
 Library usage:
-    from xtractr.tweets import get_db, export_tweet, get_playwright_cookies
+    from xtrc8.tweets import get_db, export_tweet, get_playwright_cookies
 
 CLI usage:
-    xtractr tweets auth [--db PATH]
-    xtractr tweets sync [--count N] [--folder NAME] [--all] [--auto]
-    xtractr tweets select
-    xtractr tweets status
-    xtractr tweets folders
+    xtrc8 tweets auth [--db PATH]
+    xtrc8 tweets sync [--count N] [--folder NAME] [--all] [--auto]
+    xtrc8 tweets select
+    xtrc8 tweets status
+    xtrc8 tweets folders
 """
 
 import argparse
@@ -177,7 +177,7 @@ def get_playwright_cookies(db_path: Path | None = None) -> list[dict]:
     db.close()
 
     if not rows:
-        print("ERROR: No cookies found. Run: xtractr tweets auth", file=sys.stderr)
+        print("ERROR: No cookies found. Run: xtrc8 tweets auth", file=sys.stderr)
         sys.exit(1)
 
     raw = {r["key"]: r["value"] for r in rows}
@@ -802,7 +802,7 @@ def _build_tui(db_path: Path, output_dir: Path):
     from textual.containers import Horizontal, Vertical
 
     class TweetSelector(App):
-        TITLE = "xtractr Tweet Selector"
+        TITLE = "xtrc8 Tweet Selector"
         CSS = """
         #top-panes { height: 1fr; }
         #folders-pane {

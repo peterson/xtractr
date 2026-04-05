@@ -3,14 +3,14 @@
 clip — Web article, PDF, and arxiv content extraction.
 
 Library usage:
-    from xtractr.clip import clip_web, clip_pdf, clip_arxiv, clip_pdf_url
+    from xtrc8.clip import clip_web, clip_pdf, clip_arxiv, clip_pdf_url
 
     path = clip_web("https://example.com/article", dest_dir=Path("output/refs"))
     path = clip_pdf(Path("paper.pdf"), dest_dir=Path("output/papers"))
     path = clip_arxiv("2301.00001", dest_dir=Path("output/papers"))
 
 CLI usage:
-    xtractr clip <url-or-file> [--output-dir DIR] [--to refs|papers|datasheets]
+    xtrc8 clip <url-or-file> [--output-dir DIR] [--to refs|papers|datasheets]
 """
 
 import argparse

@@ -1,5 +1,5 @@
 [project]
-name = "xtractr"
+name = "xtrc8"
 version = "0.1.0"
 description = "Web, PDF, and Twitter/X content extraction tools"
 requires-python = ">=3.11"
@@ -16,11 +16,11 @@ dependencies = [
 ]
 
 [project.scripts]
-xtractr = "xtractr.cli:main"
+xtrc8 = "xtrc8.cli:main"
 # Short aliases
-xc = "xtractr.clip:main"
-xt = "xtractr.tweets:main"
-xe = "xtractr.extract:main"
+xc = "xtrc8.clip:main"
+xt = "xtrc8.tweets:main"
+xe = "xtrc8.extract:main"
 
 [dependency-groups]
 dev = [

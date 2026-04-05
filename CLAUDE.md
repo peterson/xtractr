@@ -1,8 +1,8 @@
-# xtractr — Standing Instructions for Claude Code
+# xtrc8 — Standing Instructions for Claude Code
 
 ## What this repo is
 
-xtractr is a standalone Python toolkit for extracting and archiving web content:
+xtrc8 is a standalone Python toolkit for extracting and archiving web content:
 - **clip** — Fetch web articles (via trafilatura), convert PDFs (via pymupdf4llm),
   download arxiv papers. Outputs structured markdown with frontmatter.
 - **tweets** — Sync Twitter/X bookmarks via Playwright, browse with a Textual TUI,
@@ -11,12 +11,12 @@ xtractr is a standalone Python toolkit for extracting and archiving web content:
   and GitHub repos found in bookmarks.
 
 All paths are parametric — no hardcoded project structure. Designed to be used both
-as a library (`from xtractr.clip import clip_web`) and as a CLI (`xtractr clip <url>`).
+as a library (`from xtrc8.clip import clip_web`) and as a CLI (`xtrc8 clip <url>`).
 
 ## Package layout
 
 ```
-src/xtractr/
+src/xtrc8/
   __init__.py     — version
   util.py         — slugify and shared helpers
   cli.py          — unified CLI dispatcher
@@ -40,10 +40,10 @@ Twitter: playwright, textual, deep-translator
 ## Running
 
 ```bash
-uv run xtractr clip <url>
-uv run xtractr tweets sync --all
-uv run xtractr tweets select
-uv run xtractr extract --dry-run
+uv run xtrc8 clip <url>
+uv run xtrc8 tweets sync --all
+uv run xtrc8 tweets select
+uv run xtrc8 extract --dry-run
 ```
 
 Or via short aliases: `xc`, `xt`, `xe`.

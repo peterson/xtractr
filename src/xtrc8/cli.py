@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-xtractr — Unified CLI entry point.
+xtrc8 — Unified CLI entry point.
 
 Usage:
-    xtractr clip <url-or-file> [--output-dir DIR] [--to refs|papers|datasheets]
-    xtractr tweets <subcommand> [options]
-    xtractr extract [--dry-run] [--skip-replies]
+    xtrc8 clip <url-or-file> [--output-dir DIR] [--to refs|papers|datasheets]
+    xtrc8 tweets <subcommand> [options]
+    xtrc8 extract [--dry-run] [--skip-replies]
 """
 
 import sys
@@ -13,7 +13,7 @@ import sys
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: xtractr <command> [args...]")
+        print("Usage: xtrc8 <command> [args...]")
         print()
         print("Commands:")
         print("  clip      Clip web articles, PDFs, and arxiv papers")
@@ -23,7 +23,7 @@ def main():
 
     command = sys.argv[1]
     # Remove the command name so submodule parsers see the right argv
-    sys.argv = [f"xtractr {command}"] + sys.argv[2:]
+    sys.argv = [f"xtrc8 {command}"] + sys.argv[2:]
 
     if command == "clip":
         from .clip import main as clip_main

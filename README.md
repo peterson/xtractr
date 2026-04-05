@@ -1,13 +1,13 @@
-# xtractr
+# xtrc8
 
 Content extraction toolkit for building personal knowledge bases. Clips web articles, PDFs, arxiv papers, and Twitter/X bookmarks into structured markdown with frontmatter.
 
 ## Install
 
 ```bash
-uv add git+https://github.com/peterson/xtractr
+uv add git+https://github.com/peterson/xtrc8
 # or for local development
-uv add --editable ../xtractr
+uv add --editable ../xtrc8
 ```
 
 Playwright (required for Twitter features) needs a one-time browser install:
@@ -20,16 +20,16 @@ uv run playwright install chromium
 
 ```bash
 # Clip a web article
-xtractr clip https://example.com/some-article
+xtrc8 clip https://example.com/some-article
 
 # Clip an arxiv paper (downloads PDF, extracts markdown summary)
-xtractr clip https://arxiv.org/abs/2301.00001
+xtrc8 clip https://arxiv.org/abs/2301.00001
 
 # Clip a local PDF
-xtractr clip paper.pdf
+xtrc8 clip paper.pdf
 
 # Clip into a specific subdirectory
-xtractr clip https://example.com/article --to refs --output-dir ./raw
+xtrc8 clip https://example.com/article --to refs --output-dir ./raw
 ```
 
 ## Tools
@@ -39,7 +39,7 @@ xtractr clip https://example.com/article --to refs --output-dir ./raw
 Fetches content and converts to markdown with YAML frontmatter (title, author, date, source URL). PDFs are converted via pymupdf4llm with the original PDF kept alongside.
 
 ```bash
-xtractr clip <url-or-file> [--output-dir DIR] [--to refs|papers|datasheets|misc]
+xtrc8 clip <url-or-file> [--output-dir DIR] [--to refs|papers|datasheets|misc]
 ```
 
 | Source type | Detection | Output |
@@ -53,7 +53,7 @@ As a library:
 
 ```python
 from pathlib import Path
-from xtractr.clip import clip_web, clip_pdf, clip_arxiv, clip_pdf_url
+from xtrc8.clip import clip_web, clip_pdf, clip_arxiv, clip_pdf_url
 
 clip_web("https://example.com/article", dest_dir=Path("output/refs"))
 clip_pdf(Path("paper.pdf"), dest_dir=Path("output/papers"))
@@ -70,7 +70,7 @@ Syncs your X bookmarks into a local SQLite cache using Playwright to intercept G
 Cookies are stored in the SQLite database (no separate credentials file).
 
 ```bash
-xtractr tweets auth
+xtrc8 tweets auth
 ```
 
 You'll be prompted for `auth_token` and `ct0` from your browser's DevTools (Application > Cookies > x.com).
@@ -79,26 +79,26 @@ You'll be prompted for `auth_token` and `ct0` from your browser's DevTools (Appl
 
 ```bash
 # Sync main bookmarks (up to 200)
-xtractr tweets sync
+xtrc8 tweets sync
 
 # Sync everything — main + all folders
-xtractr tweets sync --all
+xtrc8 tweets sync --all
 
 # Sync a specific folder
-xtractr tweets sync --folder "Research"
+xtrc8 tweets sync --folder "Research"
 
 # Sync all + auto-ingest tweets from configured folders
-xtractr tweets sync --auto
+xtrc8 tweets sync --auto
 
 # Fetch more, disable early stop on duplicates
-xtractr tweets sync --count 500 --no-early-stop
+xtrc8 tweets sync --count 500 --no-early-stop
 ```
 
 #### Browse and export
 
 ```bash
 # Interactive TUI — browse, filter, select, and export tweets
-xtractr tweets select
+xtrc8 tweets select
 ```
 
 TUI keybindings:
@@ -118,8 +118,8 @@ The TUI syncs new bookmarks in the background every 10 minutes.
 #### Other commands
 
 ```bash
-xtractr tweets status    # Cache stats: total, ingested, by folder, top authors
-xtractr tweets folders   # List bookmark folders and auto-ingest settings
+xtrc8 tweets status    # Cache stats: total, ingested, by folder, top authors
+xtrc8 tweets folders   # List bookmark folders and auto-ingest settings
 ```
 
 #### Export format
@@ -143,14 +143,14 @@ Non-English tweets are auto-translated (via Google Translate) with both translat
 All commands accept `--db` and `--output-dir`:
 
 ```bash
-xtractr tweets --db ./my-cache.db --output-dir ./raw/tweets sync --all
+xtrc8 tweets --db ./my-cache.db --output-dir ./raw/tweets sync --all
 ```
 
 As a library:
 
 ```python
 from pathlib import Path
-from xtractr.tweets import get_db, export_tweet, cmd_sync_cli
+from xtrc8.tweets import get_db, export_tweet, cmd_sync_cli
 
 db = get_db(Path("tweets.db"))
 # ... query tweets, export, etc.
@@ -162,16 +162,16 @@ Scans imported tweets for URLs, resolves t.co shortlinks, and auto-clips papers,
 
 ```bash
 # Preview what would be clipped
-xtractr extract --dry-run
+xtrc8 extract --dry-run
 
 # Run full extraction (resolve links + clip)
-xtractr extract
+xtrc8 extract
 
 # Skip reply thread scraping (faster)
-xtractr extract --skip-replies
+xtrc8 extract --skip-replies
 
 # Custom paths
-xtractr extract --db ./tweets.db --output-dir ./raw
+xtrc8 extract --db ./tweets.db --output-dir ./raw
 ```
 
 Link types detected and clipped:
@@ -189,7 +189,7 @@ As a library:
 
 ```python
 from pathlib import Path
-from xtractr.extract import run_extract
+from xtrc8.extract import run_extract
 
 clipped = run_extract(
     db_path=Path("tweets.db"),
@@ -206,9 +206,9 @@ If installed as a package, short CLI aliases are available:
 
 | Alias | Equivalent |
 |-------|-----------|
-| `xc` | `xtractr clip` |
-| `xt` | `xtractr tweets` |
-| `xe` | `xtractr extract` |
+| `xc` | `xtrc8 clip` |
+| `xt` | `xtrc8 tweets` |
+| `xe` | `xtrc8 extract` |
 
 ## Dependencies
 
@@ -222,7 +222,7 @@ If installed as a package, short CLI aliases are available:
 
 ## Security notes
 
-xtractr is designed as a single-user local CLI tool. Keep these limitations in mind if you adapt it for other contexts:
+xtrc8 is designed as a single-user local CLI tool. Keep these limitations in mind if you adapt it for other contexts:
 
 - **Plaintext cookie storage** — X session cookies (`auth_token`, `ct0`) are stored unencrypted in the SQLite database. The DB file is gitignored by default, but anyone with read access to it gets your X session. If the DB could be shared or synced, consider OS keychain integration instead.
 - **No URL filtering** — `clip` and `extract` will fetch any URL they're given, including internal/private IPs (e.g. `169.254.169.254`, `localhost`). This is fine when you're the one supplying URLs, but would be an SSRF risk if URLs came from untrusted input in a server context.

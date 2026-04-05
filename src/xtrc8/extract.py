@@ -3,11 +3,11 @@
 extract — Resolve t.co links from tweets and auto-clip papers, gists, and repos.
 
 Library usage:
-    from xtractr.extract import run_extract
+    from xtrc8.extract import run_extract
     clipped = run_extract(db_path=Path(".tweets-cache.db"))
 
 CLI usage:
-    xtractr extract [--dry-run] [--skip-replies] [--db PATH]
+    xtrc8 extract [--dry-run] [--skip-replies] [--db PATH]
 """
 
 import argparse
@@ -424,7 +424,7 @@ def _update_repos_index(db, base_dir: Path):
     lines = [
         "# Repos",
         "",
-        "GitHub repositories referenced in bookmarked tweets. Auto-maintained by xtractr.",
+        "GitHub repositories referenced in bookmarked tweets. Auto-maintained by xtrc8.",
         "",
         "| Repo | Via | Clipped |",
         "|------|-----|---------|",
