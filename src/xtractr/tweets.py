@@ -850,6 +850,8 @@ def _build_tui(db_path: Path, output_dir: Path):
             Binding("q", "try_quit", "Quit", show=True),
         ]
 
+        _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
         def __init__(self):
             super().__init__()
             self._db_path = db_path
@@ -860,6 +862,9 @@ def _build_tui(db_path: Path, output_dir: Path):
             self.tweet_rows: list[dict] = []
             self.visible_rows: list[dict] = []
             self.folder_names: list[str] = []
+            self._sync_text = ""
+            self._spinner_idx = 0
+            self._spinner_timer = None
             self.active_pane = "tweets"
             self.show_filter = "all"
             self._load_data()
@@ -1054,7 +1059,7 @@ def _build_tui(db_path: Path, output_dir: Path):
                 self._reload_tweet_data()
                 self.call_later(self._on_bg_sync_complete, new_total)
             else:
-                self.call_later(self._set_sync_status, "Up to date")
+                self.call_later(lambda: self._set_sync_status("Up to date", spinning=False))
 
         def _reload_folder_list(self, db):
             self.auto_folders = get_auto_ingest_folders(db)
@@ -1097,11 +1102,32 @@ def _build_tui(db_path: Path, output_dir: Path):
             self._rebuild_tweets_table()
             self._rebuild_folders_table()
             self._update_status()
-            self._set_sync_status(f"Done — {new_count} new tweets synced")
+            self._set_sync_status(f"Done — {new_count} new tweets synced", spinning=False)
             self.notify(f"Synced {new_count} new tweets")
 
-        def _set_sync_status(self, text: str):
-            self.query_one("#sync-status", Static).update(f" ⟳ {text}" if text else "")
+        def _set_sync_status(self, text: str, spinning: bool = True):
+            self._sync_text = text
+            if text and spinning:
+                self._spinner_idx = 0
+                self._render_sync_status()
+                if self._spinner_timer is None:
+                    self._spinner_timer = self.set_interval(0.1, self._tick_spinner)
+            else:
+                if self._spinner_timer is not None:
+                    self._spinner_timer.stop()
+                    self._spinner_timer = None
+                if text:
+                    self.query_one("#sync-status", Static).update(f" ✓ {text}")
+                else:
+                    self.query_one("#sync-status", Static).update("")
+
+        def _tick_spinner(self):
+            self._spinner_idx = (self._spinner_idx + 1) % len(self._SPINNER)
+            self._render_sync_status()
+
+        def _render_sync_status(self):
+            frame = self._SPINNER[self._spinner_idx]
+            self.query_one("#sync-status", Static).update(f" {frame} {self._sync_text}")
 
         def _rebuild_folders_table(self):
             ft = self.query_one("#folders-table", DataTable)
