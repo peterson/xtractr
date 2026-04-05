@@ -1286,7 +1286,7 @@ def _build_tui(db_path: Path, output_dir: Path):
 
         async def _bg_extract_links(self):
             from .extract import run_extract
-            clipped = run_extract(self._db_path)
+            clipped = run_extract(self._db_path, auth_db_path=self._db_path)
             if clipped > 0:
                 self.call_later(
                     self.notify,

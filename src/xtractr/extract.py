@@ -133,7 +133,18 @@ def _fetch_author_replies(db, auth_db_path: Path | None = None) -> int:
         return 0
 
     print(f"\nScraping author replies for {len(rows)} tweets...")
-    new_urls = asyncio.run(_scrape_replies(db, rows, auth_db_path))
+    coro = _scrape_replies(db, rows, auth_db_path)
+    # If already inside an event loop (e.g. Textual worker), await directly
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            new_urls = pool.submit(asyncio.run, coro).result()
+    else:
+        new_urls = asyncio.run(coro)
     return new_urls
 
 
