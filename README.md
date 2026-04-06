@@ -84,7 +84,7 @@ xtrc8 tweets select
 
 ### clip — Web, PDF, and arxiv extraction
 
-Fetches content and converts to markdown with YAML frontmatter (title, author, date, source URL). PDFs are converted via pymupdf4llm with the original PDF kept alongside — the PDF is the source of truth for equations and figures, the markdown is a searchable index.
+Fetches content and converts to markdown with YAML frontmatter (title, author, date, source URL). For web articles, trafilatura extracts the main content directly. For PDFs, clip.py places the file on disk alongside a minimal placeholder stub marked `status: pending` — the actual paper summary is produced later by a human or LLM reading the PDF and writing a structured summary. This avoids the low-quality output of automated PDF-to-markdown conversion (typically broken tables of contents).
 
 ```bash
 xtrc8 clip <url-or-file> [--output-dir DIR] [--to refs|papers|datasheets|misc]
@@ -273,7 +273,7 @@ If installed as a package, short CLI aliases are available:
 ## Dependencies
 
 - **trafilatura** — web article extraction
-- **pymupdf** + **pymupdf4llm** — PDF text extraction and markdown conversion
+- **pymupdf** — PDF metadata extraction (title, author, date, page count)
 - **httpx** — HTTP client for downloads and API calls
 - **playwright** — browser automation for X bookmark scraping
 - **textual** — TUI framework for tweet selector

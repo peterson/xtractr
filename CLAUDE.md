@@ -3,8 +3,11 @@
 ## What this repo is
 
 xtrc8 is a standalone Python toolkit for extracting and archiving web content:
-- **clip** — Fetch web articles (via trafilatura), convert PDFs (via pymupdf4llm),
-  download arxiv papers. Outputs structured markdown with frontmatter.
+- **clip** — Fetch web articles (via trafilatura), ingest PDFs and arxiv papers,
+  clip videos from YouTube/Vimeo/etc (via yt-dlp). Outputs markdown with frontmatter.
+  **Note:** PDFs are placed on disk with a minimal placeholder stub — the actual
+  summary is produced later by a human/LLM reading the PDF and writing a structured
+  summary (see `raw/papers/*.md` in consuming repos for the paper template).
 - **tweets** — Sync Twitter/X bookmarks via Playwright, browse with a Textual TUI,
   export to markdown with media download and translation.
 - **extract** — Resolve t.co shortened URLs from tweets, auto-clip papers, gists,
@@ -34,7 +37,7 @@ src/xtrc8/
 
 ## Dependencies
 
-Core: trafilatura, pymupdf, pymupdf4llm, httpx, rich
+Core: trafilatura, pymupdf, httpx, rich, yt-dlp, faster-whisper (optional)
 Twitter: playwright, textual, deep-translator
 
 ## Running

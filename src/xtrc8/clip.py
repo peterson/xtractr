@@ -110,81 +110,28 @@ def _extract_pdf_metadata(pdf_path: Path) -> dict:
     }
 
 
-def _generate_pdf_summary(md_text: str, metadata: dict) -> str:
-    """Generate a structured summary from extracted markdown text."""
-    abstract = ""
-    lines = md_text.split("\n")
-    in_abstract = False
-    abstract_lines = []
-    for line in lines:
-        lower = line.strip().lower()
-        if lower.startswith("abstract") or lower.startswith("**abstract"):
-            in_abstract = True
-            rest = line.split(".", 1)[1].strip() if "." in line else ""
-            if rest:
-                abstract_lines.append(rest)
-            continue
-        if in_abstract:
-            if line.strip().startswith("#") or line.strip().startswith("**") and len(abstract_lines) > 2:
-                break
-            abstract_lines.append(line)
-            if len(abstract_lines) > 20:
-                break
-    abstract = "\n".join(abstract_lines).strip()
-
-    headings = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("## ") and not stripped.startswith("###"):
-            heading = stripped[3:].strip().rstrip("#").strip()
-            if heading and heading.lower() not in ("abstract", "references", "bibliography"):
-                headings.append(heading)
-
-    parts = []
-    if abstract:
-        parts.append("## Abstract\n")
-        parts.append(abstract)
-        parts.append("")
-
-    if headings:
-        parts.append("## Structure\n")
-        for h in headings[:30]:
-            parts.append(f"- {h}")
-        parts.append("")
-
-    parts.append("## Full Text\n")
-    parts.append("See source PDF for complete content including equations and figures.")
-    parts.append(f"Pages: {metadata.get('page_count', '?')}")
-    parts.append("")
-
-    return "\n".join(parts)
-
-
 def clip_pdf(pdf_path: Path, dest_dir: Path, keep_pdf: bool = True) -> Path:
-    """Convert a PDF to a structured markdown summary.
-    Keeps the original PDF alongside — PDF is source of truth for
-    equations and images; markdown is a searchable summary + index."""
-    import pymupdf4llm
+    """Place a PDF into the destination directory with a slugified filename
+    and write a minimal placeholder markdown stub next to it. The stub
+    contains PDF metadata in YAML frontmatter and a 'pending summarisation'
+    body — the expectation is that Claude (or a human) will read the PDF
+    and replace the stub with a full summary following the paper template.
+
+    The previous version of this function tried to auto-generate a markdown
+    summary via pymupdf4llm + heading heuristics. That output was typically
+    just a broken table of contents. The new flow separates the mechanical
+    step (drop PDF + stub) from the interpretive step (read + summarise),
+    which a human/LLM does properly once, with the result serving as the
+    compile-pass input instead of the PDF itself.
+    """
+    import shutil
 
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Processing {pdf_path.name}...")
+    print(f"Ingesting {pdf_path.name}...")
 
     meta = _extract_pdf_metadata(pdf_path)
-    title = meta["title"]
-
-    md_full = pymupdf4llm.to_markdown(str(pdf_path))
-
-    if not title:
-        for line in md_full.split("\n"):
-            line = line.strip()
-            if line.startswith("# "):
-                title = line[2:].strip()
-                break
-            elif line and not title:
-                title = line[:80]
-
-    summary = _generate_pdf_summary(md_full, meta)
+    title = meta["title"] or pdf_path.stem.replace("_", " ").replace("-", " ")
 
     slug = slugify(title) if title else slugify(pdf_path.stem)
     filename = f"{slug}.md"
@@ -196,7 +143,6 @@ def clip_pdf(pdf_path: Path, dest_dir: Path, keep_pdf: bool = True) -> Path:
     if keep_pdf:
         pdf_dest = path.with_suffix(".pdf")
         if pdf_path.resolve() != pdf_dest.resolve():
-            import shutil
             shutil.copy2(pdf_path, pdf_dest)
             print(f"  PDF kept: {pdf_dest.name}")
 
@@ -209,17 +155,30 @@ def clip_pdf(pdf_path: Path, dest_dir: Path, keep_pdf: bool = True) -> Path:
     if meta["keywords"]:
         fm_lines.append(f"keywords: {meta['keywords']}")
     fm_lines.append(f"pages: {meta['page_count']}")
+    fm_lines.append("status: pending")
     fm_lines += ["---", ""]
 
     pdf_link = f"[Source PDF]({path.with_suffix('.pdf').name})"
-    lines = fm_lines + [f"# {title}", "", pdf_link, "", summary]
+    body = [
+        f"# {title}",
+        "",
+        pdf_link,
+        "",
+        "## Pending summarisation",
+        "",
+        f"This PDF has {meta['page_count']} pages and needs a structured",
+        "summary following the standard paper template. See other papers",
+        "in `raw/papers/` with `status: summarised` for examples.",
+        "",
+    ]
 
-    path.write_text("\n".join(lines))
+    path.write_text("\n".join(fm_lines + body))
     return path
 
 
 def clip_pdf_url(url: str, dest_dir: Path) -> Path:
-    """Download a PDF from a URL and convert to markdown. Keeps the PDF."""
+    """Download a PDF from a URL and place it into dest_dir via clip_pdf.
+    Injects the source URL into the frontmatter of the resulting stub."""
     import httpx
 
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -239,10 +198,12 @@ def clip_pdf_url(url: str, dest_dir: Path) -> Path:
 
     try:
         result = clip_pdf(tmp_pdf, dest_dir, keep_pdf=True)
+        # Inject source URL into the frontmatter so the stub can be
+        # re-fetched or cross-referenced later
         text = result.read_text()
         text = text.replace(
-            f"source_file: {tmp_pdf.name}",
-            f"source_file: {url_stem}.pdf\nurl: {url}",
+            "source_pdf:",
+            f"url: {url}\nsource_pdf:",
         )
         result.write_text(text)
     finally:
@@ -252,12 +213,14 @@ def clip_pdf_url(url: str, dest_dir: Path) -> Path:
 
 
 def clip_arxiv(arxiv_id: str, dest_dir: Path) -> Path:
-    """Download an arxiv paper PDF and convert to markdown."""
+    """Download an arxiv paper PDF and place it into dest_dir via clip_pdf.
+    Injects arxiv: and url: fields into the frontmatter of the stub."""
     import httpx
 
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+    abs_url = f"https://arxiv.org/abs/{arxiv_id}"
     print(f"Downloading arxiv:{arxiv_id}...")
 
     try:
@@ -275,8 +238,8 @@ def clip_arxiv(arxiv_id: str, dest_dir: Path) -> Path:
         result = clip_pdf(tmp_pdf, dest_dir, keep_pdf=True)
         text = result.read_text()
         text = text.replace(
-            f"source_file: {tmp_pdf.name}",
-            f"source_file: arxiv:{arxiv_id}\nurl: https://arxiv.org/abs/{arxiv_id}",
+            "source_pdf:",
+            f"arxiv: {arxiv_id}\nurl: {abs_url}\nsource_pdf:",
         )
         result.write_text(text)
     finally:
