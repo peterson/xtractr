@@ -1306,19 +1306,30 @@ def _build_tui(db_path: Path, output_dir: Path):
             db.close()
             self._refresh_tweet_marks()
             self._update_status()
+            self._set_sync_status(f"Imported {count} tweets — extracting links…")
             self.notify(f"Imported {count} tweets. Extracting links...")
 
-            self.run_worker(self._bg_extract_links, exclusive=False)
+            self.run_worker(self._bg_extract_links, thread=True, exclusive=False)
 
-        async def _bg_extract_links(self):
+        def _bg_extract_links(self):
             from .extract import run_extract
             clipped = run_extract(self._db_path, auth_db_path=self._db_path)
             if clipped > 0:
+                self.call_later(
+                    self._set_sync_status,
+                    f"Done — clipped {clipped} papers/gists from links",
+                    False,
+                )
                 self.call_later(
                     self.notify,
                     f"Auto-clipped {clipped} papers/gists from tweet links",
                 )
             else:
+                self.call_later(
+                    self._set_sync_status,
+                    "Done — no new papers/gists found",
+                    False,
+                )
                 self.call_later(
                     self.notify,
                     "Link extraction complete — no new papers/gists found",

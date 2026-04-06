@@ -132,8 +132,12 @@ def _fetch_author_replies(db, auth_db_path: Path | None = None) -> int:
     if not rows:
         return 0
 
+    # Grab db_path before crossing thread boundary — SQLite connections
+    # cannot be shared across threads.
+    db_path = Path(db.execute("PRAGMA database_list").fetchone()[2])
+
     print(f"\nScraping author replies for {len(rows)} tweets...")
-    coro = _scrape_replies(db, rows, auth_db_path)
+    coro = _scrape_replies(db_path, rows, auth_db_path)
     # If already inside an event loop (e.g. Textual worker), await directly
     try:
         loop = asyncio.get_running_loop()
@@ -148,7 +152,8 @@ def _fetch_author_replies(db, auth_db_path: Path | None = None) -> int:
     return new_urls
 
 
-async def _scrape_replies(db, rows, auth_db_path: Path | None = None) -> int:
+async def _scrape_replies(db_path, rows, auth_db_path: Path | None = None) -> int:
+    db = get_db(db_path)
     pw, browser, context = await _create_browser_context(auth_db_path)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     new_urls = 0
@@ -229,6 +234,7 @@ async def _scrape_replies(db, rows, auth_db_path: Path | None = None) -> int:
 
     await browser.close()
     await pw.stop()
+    db.close()
 
     print(f"  Found {new_urls} new clippable URLs from replies.")
     return new_urls
