@@ -94,6 +94,10 @@ def get_auto_ingest_folders(db: sqlite3.Connection) -> set[str]:
 
 
 def set_folder_auto_ingest(db: sqlite3.Connection, name: str, auto: bool):
+    # (unfiled) is a synthetic/virtual folder — never persist it to the
+    # folders table. Auto-ingest toggling for (unfiled) is a no-op.
+    if name == "(unfiled)":
+        return
     db.execute("""
         INSERT INTO folders (name, auto_ingest)
         VALUES (?, ?)
@@ -894,6 +898,7 @@ def _build_tui(db_path: Path, output_dir: Path):
                     FROM tweets
                     GROUP BY folder_name
                 ) t ON f.name = t.fname
+                WHERE f.name != '(unfiled)'
                 ORDER BY f.name
             """).fetchall()
             unfiled_count = db.execute(
@@ -1071,6 +1076,7 @@ def _build_tui(db_path: Path, output_dir: Path):
                            COUNT(*) as cnt
                     FROM tweets GROUP BY folder_name
                 ) t ON f.name = t.fname
+                WHERE f.name != '(unfiled)'
                 ORDER BY f.name
             """).fetchall()
             unfiled_count = db.execute(
