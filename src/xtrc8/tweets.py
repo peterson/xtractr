@@ -90,6 +90,12 @@ def get_db(db_path: Path | None = None) -> sqlite3.Connection:
         db.execute("ALTER TABLE tweets ADD COLUMN folder_name TEXT")
     if "folder_id" not in cols:
         db.execute("ALTER TABLE tweets ADD COLUMN folder_id TEXT")
+    # Migration: add purged column. NULL = not purged, timestamp string = when
+    # the tweet was marked "do not re-export". Set by purge_tweets() (manual or
+    # via reconcile_with_disk()) so that auto_ingest_folder() will skip tweets
+    # the consumer has deliberately deleted from its output dir.
+    if "purged" not in cols:
+        db.execute("ALTER TABLE tweets ADD COLUMN purged TEXT")
     db.commit()
     return db
 
@@ -610,18 +616,12 @@ async def _sync(
 
 def _auto_ingest_folder(db: sqlite3.Connection, folder_name: str, now: str,
                         output_dir: Path) -> int:
-    rows = db.execute(
-        "SELECT * FROM tweets WHERE folder_name = ? AND ingested = 0",
-        (folder_name,),
-    ).fetchall()
-    for row in rows:
-        export_tweet(row, output_dir)
-        db.execute(
-            "UPDATE tweets SET ingested = 1, ingested_at = ? WHERE id = ?",
-            (now, row["id"]),
-        )
-    db.commit()
-    return len(rows)
+    """Legacy entry point — delegates to auto_ingest_folder() so existing
+    callers (the sync flow) get the purge / file-exists safety filters.
+    Returns the number of files actually written (not the row count).
+    """
+    result = auto_ingest_folder(db, folder_name, output_dir, now=now)
+    return result.imported_count
 
 
 # ---------------------------------------------------------------------------
@@ -629,6 +629,7 @@ def _auto_ingest_folder(db: sqlite3.Connection, folder_name: str, now: str,
 # ---------------------------------------------------------------------------
 
 def cmd_status_cli(db_path: Path):
+    from rich.columns import Columns
     from rich.console import Console
     from rich.table import Table
 
@@ -651,7 +652,8 @@ def cmd_status_cli(db_path: Path):
         folder_rows = db.execute("""
             SELECT COALESCE(folder_name, '(unfiled)') as fname,
                    COUNT(*) as total,
-                   SUM(CASE WHEN ingested = 0 THEN 1 ELSE 0 END) as pending
+                   SUM(CASE WHEN ingested = 1 THEN 1 ELSE 0 END) as ingested,
+                   SUM(CASE WHEN ingested = 0 THEN 1 ELSE 0 END) as cached
             FROM tweets GROUP BY folder_name ORDER BY total DESC
         """).fetchall()
         if folder_rows:
@@ -659,24 +661,49 @@ def cmd_status_cli(db_path: Path):
             tf = Table(title="By Folder")
             tf.add_column("Folder")
             tf.add_column("Total", justify="right")
-            tf.add_column("Pending", justify="right")
+            tf.add_column("Ingested", justify="right", style="green")
+            tf.add_column("Cached", justify="right", style="yellow")
+            tf.add_column("% Ingested", justify="right")
             for r in folder_rows:
-                tf.add_row(r["fname"], str(r["total"]), str(r["pending"]))
+                pct = (r["ingested"] / r["total"] * 100) if r["total"] else 0
+                tf.add_row(
+                    r["fname"],
+                    str(r["total"]),
+                    str(r["ingested"]),
+                    str(r["cached"]),
+                    f"{pct:.0f}%",
+                )
             console.print(tf)
 
-        rows = db.execute("""
+        ingested_rows = db.execute("""
+            SELECT author_handle, COUNT(*) as cnt
+            FROM tweets WHERE ingested = 1
+            GROUP BY author_handle ORDER BY cnt DESC LIMIT 20
+        """).fetchall()
+        pending_rows = db.execute("""
             SELECT author_handle, COUNT(*) as cnt
             FROM tweets WHERE ingested = 0
-            GROUP BY author_handle ORDER BY cnt DESC LIMIT 10
+            GROUP BY author_handle ORDER BY cnt DESC LIMIT 20
         """).fetchall()
-        if rows:
-            console.print()
-            t2 = Table(title="Top Authors (not yet ingested)")
-            t2.add_column("Author")
+
+        author_tables = []
+        if ingested_rows:
+            t2 = Table(title="Top Authors (ingested)")
+            t2.add_column("Author", style="green")
             t2.add_column("Tweets", justify="right")
-            for r in rows:
+            for r in ingested_rows:
                 t2.add_row(f"@{r['author_handle']}", str(r['cnt']))
-            console.print(t2)
+            author_tables.append(t2)
+        if pending_rows:
+            t3 = Table(title="Top Authors (cached)")
+            t3.add_column("Author", style="yellow")
+            t3.add_column("Tweets", justify="right")
+            for r in pending_rows:
+                t3.add_row(f"@{r['author_handle']}", str(r['cnt']))
+            author_tables.append(t3)
+        if author_tables:
+            console.print()
+            console.print(Columns(author_tables, padding=(0, 4), equal=True))
 
     db.close()
 
@@ -746,8 +773,18 @@ def _download_media(url: str, tweet_id: str, index: int, media_dir: Path) -> Pat
         return None
 
 
-def export_tweet(row: sqlite3.Row, output_dir: Path) -> Path:
-    """Export a tweet to a markdown file in output_dir."""
+def export_tweet(
+    row: sqlite3.Row,
+    output_dir: Path,
+    *,
+    download_media: bool = True,
+    translate: bool = True,
+) -> Path:
+    """Export a tweet to a markdown file in output_dir.
+
+    `download_media` and `translate` default to True for normal use. Tests
+    pass False to keep the operation offline (no network calls).
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     media_dir = output_dir / "media"
 
@@ -770,7 +807,7 @@ def export_tweet(row: sqlite3.Row, output_dir: Path) -> Path:
 
     media = json.loads(row["media_json"]) if row["media_json"] else []
     lang = row["lang"] or "en"
-    needs_translation = lang not in _SKIP_TRANSLATE
+    needs_translation = translate and lang not in _SKIP_TRANSLATE
     full_text = row["full_text"] or ""
 
     translation = None
@@ -800,7 +837,7 @@ def export_tweet(row: sqlite3.Row, output_dir: Path) -> Path:
             murl = m.get("url", "")
             if not murl:
                 continue
-            local = _download_media(murl, row["id"], i, media_dir)
+            local = _download_media(murl, row["id"], i, media_dir) if download_media else None
             if local:
                 rel = f"media/{local.name}"
                 lines.append(f"![{m.get('type', 'media')}]({rel})")
@@ -817,6 +854,333 @@ def export_tweet(row: sqlite3.Row, output_dir: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Tweet operations — pure data-layer functions, UI-agnostic, testable
+#
+# These functions are the canonical entry points for tweet import / unimport
+# / purge / reconcile. The TUI and CLI both call them. Tests call them
+# directly with a temp DB. Network-touching side effects (media download,
+# translation) can be disabled via kwargs for offline testing.
+# ---------------------------------------------------------------------------
+
+# Filename pattern for export_tweet output: YYYY-MM-DD-handle-slug.md or
+# YYYY-MM-DD-handle-tweetid.md (collision fallback). Use this regex to
+# extract the tweet ID from existing filenames during reconcile_with_disk().
+_TWEET_FILENAME_RE = re.compile(r"\b(\d{15,25})\b")
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _file_for_tweet_exists(output_dir: Path, row: sqlite3.Row) -> bool:
+    """Return True if any .md file in output_dir corresponds to this tweet.
+
+    Computes the same filename(s) that export_tweet would write and checks
+    whether they exist. Both the slug filename pattern and the id-fallback
+    pattern are checked, since the slug filename does not contain the tweet
+    ID. The check is deterministic and cheap (no directory scan).
+    """
+    if not output_dir.exists():
+        return False
+
+    tid = row["id"]
+    handle = sanitize_handle(row["author_handle"])
+    slug = slugify(row["full_text"], max_len=40)
+    try:
+        dt = datetime.strptime(row["created_at"], "%a %b %d %H:%M:%S %z %Y")
+        date_str = dt.strftime("%Y-%m-%d")
+    except (ValueError, TypeError):
+        date_str = None
+
+    candidates: list[Path] = []
+    if date_str:
+        if slug:
+            candidates.append(output_dir / f"{date_str}-{handle}-{slug}.md")
+        candidates.append(output_dir / f"{date_str}-{handle}-{tid}.md")
+
+    for path in candidates:
+        if path.exists():
+            return True
+
+    # Last-resort fallback: any .md file whose name contains the tweet ID.
+    # Catches the id-fallback case if the date_str path above didn't match
+    # (e.g. the export was done with a different system clock).
+    for p in output_dir.glob(f"*{tid}*.md"):
+        if p.is_file():
+            return True
+    return False
+
+
+class ImportResult:
+    """Result of import_tweets / auto_ingest_folder."""
+    def __init__(self):
+        self.imported_ids: list[str] = []
+        self.skipped_purged: list[str] = []
+        self.skipped_existing: list[str] = []
+        self.skipped_missing: list[str] = []
+        self.paths: list[Path] = []
+
+    @property
+    def imported_count(self) -> int:
+        return len(self.imported_ids)
+
+    def __repr__(self) -> str:
+        return (
+            f"ImportResult(imported={self.imported_count}, "
+            f"skipped_purged={len(self.skipped_purged)}, "
+            f"skipped_existing={len(self.skipped_existing)}, "
+            f"skipped_missing={len(self.skipped_missing)})"
+        )
+
+
+def import_tweets(
+    db: sqlite3.Connection,
+    output_dir: Path,
+    tweet_ids: list[str] | set[str],
+    *,
+    now: str | None = None,
+    download_media: bool = True,
+    translate: bool = True,
+    skip_existing: bool = True,
+    skip_purged: bool = True,
+) -> ImportResult:
+    """Export the given tweet IDs to markdown files in output_dir.
+
+    The canonical import path. Replaces the inlined logic in
+    TUI action_import and the previous _auto_ingest_folder export loop.
+
+    Safety filters (default on, can be disabled for testing):
+    - skip_purged: tweets with purged IS NOT NULL are skipped (these were
+      deliberately removed from the consumer; do not re-export).
+    - skip_existing: tweets whose .md file already exists in output_dir are
+      skipped (no clobbering, no duplicates from the id-fallback path).
+
+    Sets ingested = 1 and ingested_at = now for each successfully exported
+    tweet. Commits at the end. Returns an ImportResult with counts and
+    written paths.
+    """
+    result = ImportResult()
+    now = now or _now_iso()
+
+    for tid in tweet_ids:
+        row = db.execute("SELECT * FROM tweets WHERE id = ?", (tid,)).fetchone()
+        if row is None:
+            result.skipped_missing.append(tid)
+            continue
+        if skip_purged and row["purged"] is not None:
+            result.skipped_purged.append(tid)
+            continue
+        if skip_existing and _file_for_tweet_exists(output_dir, row):
+            result.skipped_existing.append(tid)
+            # Still mark ingested so the cache reflects reality
+            db.execute(
+                "UPDATE tweets SET ingested = 1, ingested_at = ? WHERE id = ?",
+                (now, tid),
+            )
+            continue
+        path = export_tweet(
+            row, output_dir,
+            download_media=download_media,
+            translate=translate,
+        )
+        db.execute(
+            "UPDATE tweets SET ingested = 1, ingested_at = ? WHERE id = ?",
+            (now, tid),
+        )
+        result.imported_ids.append(tid)
+        result.paths.append(path)
+
+    db.commit()
+    return result
+
+
+def unimport_tweet(
+    db: sqlite3.Connection,
+    output_dir: Path,
+    tweet_id: str,
+) -> bool:
+    """Remove a tweet's .md file from output_dir and clear ingested flag.
+
+    Returns True if a file was removed, False if no matching file was found.
+    Does NOT mark the tweet as purged — use purge_tweets() for that.
+    """
+    row = db.execute("SELECT * FROM tweets WHERE id = ?", (tweet_id,)).fetchone()
+    if row is None:
+        return False
+
+    removed = False
+    if output_dir.exists():
+        # Try id-fallback filename first (cheap)
+        for p in output_dir.glob(f"*{tweet_id}*.md"):
+            if p.is_file():
+                p.unlink()
+                removed = True
+                break
+        # Then try slug-based filename
+        if not removed:
+            slug = slugify(row["full_text"], max_len=40)
+            handle = sanitize_handle(row["author_handle"])
+            if slug:
+                for p in output_dir.glob(f"*-{handle}-{slug}.md"):
+                    if p.is_file():
+                        p.unlink()
+                        removed = True
+                        break
+
+    db.execute(
+        "UPDATE tweets SET ingested = 0, ingested_at = NULL WHERE id = ?",
+        (tweet_id,),
+    )
+    db.commit()
+    return removed
+
+
+def purge_tweets(
+    db: sqlite3.Connection,
+    tweet_ids: list[str] | set[str],
+    *,
+    now: str | None = None,
+) -> int:
+    """Mark tweets as purged so import_tweets / auto_ingest_folder will skip
+    them. Use this when the consumer has deliberately deleted a tweet's .md
+    file and never wants it re-exported.
+
+    Idempotent: re-purging an already-purged tweet is a no-op.
+    Returns the number of rows affected.
+    """
+    now = now or _now_iso()
+    count = 0
+    for tid in tweet_ids:
+        cur = db.execute(
+            "UPDATE tweets SET purged = ? WHERE id = ? AND purged IS NULL",
+            (now, tid),
+        )
+        count += cur.rowcount
+    db.commit()
+    return count
+
+
+def unpurge_tweets(
+    db: sqlite3.Connection,
+    tweet_ids: list[str] | set[str],
+) -> int:
+    """Reverse purge_tweets() — clear the purged flag so the tweet can be
+    re-exported. Returns the number of rows affected.
+    """
+    count = 0
+    for tid in tweet_ids:
+        cur = db.execute(
+            "UPDATE tweets SET purged = NULL WHERE id = ? AND purged IS NOT NULL",
+            (tid,),
+        )
+        count += cur.rowcount
+    db.commit()
+    return count
+
+
+class ReconcileResult:
+    """Result of reconcile_with_disk."""
+    def __init__(self):
+        self.disk_files: int = 0
+        self.disk_ids: set[str] = set()
+        self.db_ingested: set[str] = set()
+        self.orphan_db_rows: set[str] = set()  # ingested=1 in DB but no file
+        self.orphan_disk_files: set[str] = set()  # file on disk but no DB row
+        self.purged_count: int = 0  # if mark_purged=True
+
+    def __repr__(self) -> str:
+        return (
+            f"ReconcileResult(disk_files={self.disk_files}, "
+            f"db_ingested={len(self.db_ingested)}, "
+            f"orphan_db_rows={len(self.orphan_db_rows)}, "
+            f"orphan_disk_files={len(self.orphan_disk_files)}, "
+            f"purged_count={self.purged_count})"
+        )
+
+
+def reconcile_with_disk(
+    db: sqlite3.Connection,
+    output_dir: Path,
+    *,
+    mark_purged: bool = False,
+) -> ReconcileResult:
+    """Compare the consumer's output dir against the cache.
+
+    Walks the .md files in output_dir, extracts tweet IDs from them
+    (frontmatter URL), and computes:
+    - disk_ids: tweet IDs found on disk
+    - db_ingested: tweet IDs marked ingested=1 in the cache
+    - orphan_db_rows: ingested=1 but no file on disk (the bug class)
+    - orphan_disk_files: file on disk but no DB row (cache pruned externally)
+
+    If mark_purged=True, marks every orphan_db_rows entry as purged so that
+    future auto_ingest passes won't re-export it. This is the cleanup
+    operation for "I deleted these files and never want them back."
+    """
+    result = ReconcileResult()
+
+    if output_dir.exists():
+        for p in output_dir.iterdir():
+            if not (p.is_file() and p.suffix == ".md"):
+                continue
+            result.disk_files += 1
+            # Extract tweet ID from frontmatter URL line, e.g.
+            # url: https://x.com/handle/status/12345
+            try:
+                content = p.read_text(errors="replace")
+                m = re.search(r"status/(\d{15,25})", content)
+                if m:
+                    result.disk_ids.add(m.group(1))
+                    continue
+            except OSError:
+                pass
+            # Fallback: try filename pattern
+            m = _TWEET_FILENAME_RE.search(p.stem)
+            if m:
+                result.disk_ids.add(m.group(1))
+
+    rows = db.execute("SELECT id FROM tweets WHERE ingested = 1").fetchall()
+    result.db_ingested = {r["id"] for r in rows}
+
+    result.orphan_db_rows = result.db_ingested - result.disk_ids
+    result.orphan_disk_files = result.disk_ids - result.db_ingested
+
+    if mark_purged and result.orphan_db_rows:
+        result.purged_count = purge_tweets(db, result.orphan_db_rows)
+
+    return result
+
+
+def auto_ingest_folder(
+    db: sqlite3.Connection,
+    folder_name: str,
+    output_dir: Path,
+    *,
+    now: str | None = None,
+    download_media: bool = True,
+    translate: bool = True,
+) -> ImportResult:
+    """Public, testable replacement for the legacy _auto_ingest_folder.
+
+    Selects all NOT-PURGED, NOT-INGESTED tweets in the given folder and
+    runs them through import_tweets, which applies the existing-file
+    safety check.
+    """
+    rows = db.execute(
+        "SELECT id FROM tweets "
+        "WHERE folder_name = ? AND ingested = 0 AND purged IS NULL",
+        (folder_name,),
+    ).fetchall()
+    ids = [r["id"] for r in rows]
+    return import_tweets(
+        db, output_dir, ids,
+        now=now,
+        download_media=download_media,
+        translate=translate,
+    )
+
+
+# ---------------------------------------------------------------------------
 # TUI selector
 # ---------------------------------------------------------------------------
 
@@ -829,6 +1193,64 @@ def cmd_select_cli(db_path: Path, output_dir: Path):
         return
     app = _build_tui(db_path, output_dir)
     app.run()
+
+
+def cmd_purge_cli(
+    db_path: Path,
+    output_dir: Path,
+    ids: str | None,
+    from_output_dir: bool,
+    unpurge: bool,
+):
+    """Purge tweets from auto-ingest, or undo a previous purge.
+
+    Three modes:
+    1. --ids id1,id2,...        Mark the listed IDs as purged.
+    2. --from-output-dir        Reconcile output_dir against cache and
+                                purge any DB row marked ingested but with
+                                no matching file on disk.
+    3. --ids ... --unpurge      Reverse a previous purge.
+    """
+    db = get_db(db_path)
+    try:
+        if from_output_dir:
+            result = reconcile_with_disk(db, output_dir, mark_purged=True)
+            print(f"Reconciled: {result}")
+            print(f"Purged {result.purged_count} tweets that were marked "
+                  f"ingested in cache but missing from {output_dir}")
+            return
+
+        if not ids:
+            print("Specify either --ids ID1,ID2,... or --from-output-dir")
+            sys.exit(1)
+        id_list = [s.strip() for s in ids.split(",") if s.strip()]
+        if unpurge:
+            n = unpurge_tweets(db, id_list)
+            print(f"Unpurged {n} tweets")
+        else:
+            n = purge_tweets(db, id_list)
+            print(f"Purged {n} tweets")
+    finally:
+        db.close()
+
+
+def cmd_reconcile_cli(db_path: Path, output_dir: Path, mark_purged: bool):
+    """Report (or fix) the difference between cache and output dir."""
+    db = get_db(db_path)
+    try:
+        result = reconcile_with_disk(db, output_dir, mark_purged=mark_purged)
+        print(f"Output dir: {output_dir}")
+        print(f"  .md files found: {result.disk_files}")
+        print(f"  tweet IDs extracted from disk: {len(result.disk_ids)}")
+        print(f"  DB rows with ingested=1: {len(result.db_ingested)}")
+        print(f"  orphan DB rows (ingested but no file): {len(result.orphan_db_rows)}")
+        print(f"  orphan disk files (file but no DB row): {len(result.orphan_disk_files)}")
+        if mark_purged:
+            print(f"  marked {result.purged_count} orphan DB rows as purged")
+        elif result.orphan_db_rows:
+            print(f"  (run with --mark-purged to prevent re-export)")
+    finally:
+        db.close()
 
 
 def _build_tui(db_path: Path, output_dir: Path):
@@ -1327,25 +1749,29 @@ def _build_tui(db_path: Path, output_dir: Path):
             db = get_db(self._db_path)
             now = datetime.now(timezone.utc).isoformat(timespec="seconds")
             count = 0
-            for t in self.tweet_rows:
-                if t["id"] in to_import:
-                    row = db.execute(
-                        "SELECT * FROM tweets WHERE id = ?", (t["id"],)
-                    ).fetchone()
-                    export_tweet(row, self._output_dir)
-                    db.execute(
-                        "UPDATE tweets SET ingested = 1, ingested_at = ? WHERE id = ?",
-                        (now, t["id"]),
-                    )
-                    self.imported.add(t["id"])
-                    self.selected.discard(t["id"])
-                    count += 1
-            db.commit()
+            result = import_tweets(db, self._output_dir, to_import, now=now)
+            for tid in result.imported_ids:
+                self.imported.add(tid)
+                self.selected.discard(tid)
+            for tid in result.skipped_existing:
+                self.imported.add(tid)
+                self.selected.discard(tid)
+            count = result.imported_count
             db.close()
             self._refresh_tweet_marks()
             self._update_status()
-            self._set_sync_status(f"Imported {count} tweets — extracting links…")
-            self.notify(f"Imported {count} tweets. Extracting links...")
+            extras = []
+            if result.skipped_purged:
+                extras.append(f"{len(result.skipped_purged)} purged")
+            if result.skipped_existing:
+                extras.append(f"{len(result.skipped_existing)} already on disk")
+            if result.skipped_missing:
+                extras.append(f"{len(result.skipped_missing)} missing from cache")
+            extra_str = f" ({'; '.join(extras)})" if extras else ""
+            self._set_sync_status(
+                f"Imported {count} tweets{extra_str} — extracting links…"
+            )
+            self.notify(f"Imported {count} tweets{extra_str}. Extracting links...")
 
             self.run_worker(self._bg_extract_links, thread=True, exclusive=False)
 
@@ -1385,20 +1811,7 @@ def _build_tui(db_path: Path, output_dir: Path):
                 return
             t = self.visible_rows[row_idx]
             db = get_db(self._db_path)
-            row = db.execute("SELECT * FROM tweets WHERE id = ?", (tid,)).fetchone()
-            for path in self._output_dir.iterdir():
-                if path.suffix == ".md" and tid in path.stem:
-                    path.unlink()
-                    break
-                slug = slugify(row["full_text"], max_len=40)
-                if slug and slug in path.stem and row["author_handle"] in path.stem:
-                    path.unlink()
-                    break
-            db.execute(
-                "UPDATE tweets SET ingested = 0, ingested_at = NULL WHERE id = ?",
-                (tid,),
-            )
-            db.commit()
+            unimport_tweet(db, self._output_dir, tid)
             db.close()
             self.imported.discard(tid)
             self._refresh_tweet_marks()
@@ -1491,6 +1904,26 @@ def main():
     sub.add_parser("select", help="TUI to select tweets for ingest")
     sub.add_parser("status", help="Show cache status")
 
+    p_purge = sub.add_parser(
+        "purge",
+        help="Mark tweets as purged so auto-ingest will skip them",
+    )
+    p_purge.add_argument("--ids", type=str, default=None,
+                         help="Comma-separated tweet IDs to purge")
+    p_purge.add_argument("--from-output-dir", action="store_true",
+                         help="Reconcile output dir vs cache and purge any "
+                              "tweet marked ingested in DB but missing from disk")
+    p_purge.add_argument("--unpurge", action="store_true",
+                         help="Reverse: clear the purged flag on the given --ids")
+
+    p_reconcile = sub.add_parser(
+        "reconcile",
+        help="Compare output dir against cache, report orphans (read-only)",
+    )
+    p_reconcile.add_argument("--mark-purged", action="store_true",
+                             help="Also mark orphan DB rows as purged "
+                                  "(equivalent to 'purge --from-output-dir')")
+
     args = parser.parse_args()
 
     db_path = Path(args.db) if args.db else _DEFAULT_DB
@@ -1507,6 +1940,10 @@ def main():
         cmd_status_cli(db_path)
     elif args.command == "select":
         cmd_select_cli(db_path, output_dir)
+    elif args.command == "purge":
+        cmd_purge_cli(db_path, output_dir, args.ids, args.from_output_dir, args.unpurge)
+    elif args.command == "reconcile":
+        cmd_reconcile_cli(db_path, output_dir, args.mark_purged)
     else:
         parser.print_help()
         sys.exit(1)
